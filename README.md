@@ -39,7 +39,7 @@ Message format:
 ## Status codes
 One byte long, least significant 6 bits are used for statuses. Add an offset of 64 and interpret as a ASCII char.
 ```
-MSB--<0><OFFSET><ACTIVE><GPS><FENCE><ACCEL><TAMP><BATT>--LSB
+MSB--<0><OFFSET><ACTIVE><GPS><ACCEL><FENCE><TAMP><BATT>--LSB
 <0>         0. Not used.
 
 <OFFSET>    0. Offset only when sending message to avoid overflow.
@@ -50,11 +50,11 @@ MSB--<0><OFFSET><ACTIVE><GPS><FENCE><ACCEL><TAMP><BATT>--LSB
 <GPS>       1 = GPS fix
             0 = No GPS fix
             
-<FENCE>     0 = Inside geofence
-            1 = Outside geofence, alarm
-            
 <ACCEL>     0 = Normal accelerometer readings
             1 = Accelerometer treshold exceeded, tracker is moving
+            
+<FENCE>     0 = Inside geofence  
+            1 = Outside geofence, alarm  
             
 <TAMP>      0 = Default, no tampering detected
             1 = Physical tampering detected
