@@ -176,15 +176,15 @@ void initGPS() {
   pinMode(PINGPSENABLE, OUTPUT);
   pinMode(PINGPSFIX, INPUT);
   pinMode(PINGPSPPS, INPUT);
-  // TODO Investigate GPS not taking commands on startup and necessity of enabling twice
+  // Needs at least 600ms delay between setting pin and starting GPS or it will not take the commands.
   digitalWrite(PINGPSENABLE, HIGH);
+  delay(600);
   GPS.begin(9600);
   /* Minimum GPS data */
   GPS.sendCommand(PMTK_SET_NMEA_OUTPUT_RMCONLY);
   /* 10 second update rate for updates and fix */
   GPS.sendCommand(PMTK_SET_NMEA_UPDATE_100_MILLIHERTZ);
-  GPS.sendCommand(PMTK_API_SET_FIX_CTL_100_MILLIHERTZ);
-  digitalWrite(PINGPSENABLE, HIGH);
+  GPS.sendCommand(PMTK_API_SET_FIX_CTL_200_MILLIHERTZ);
 }
 
 /*
