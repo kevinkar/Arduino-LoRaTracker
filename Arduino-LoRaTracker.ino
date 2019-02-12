@@ -24,12 +24,12 @@
 #define GPSINTERVAL 10000
 
 /* Status code bits */
-#define BATTERY_LOW B00100000
-#define TAMPERED B00010000
+#define BATTERY_LOW B00000001
+#define TAMPERED B00000010
 #define ACC_TRESHOLD B00001000
 #define GEOFENCE_ALARM B00000100
-#define GPS_FIX B00000010
-#define ACTIVE_MODE B00000001
+#define GPS_FIX B00010000
+#define ACTIVE_MODE B00100000
 #define CHAR_OFFSET B01000000
 
 /* LoRa connection values. Replace with your own */
@@ -84,7 +84,7 @@ void setup()
   digitalWrite(LED, HIGH);
   initGPS();
 
-  geofenceRadius = 500;
+  geofenceRadius = 1000;
   homeLatitude = DEFAULTLATITUDE;
   homeLongitude = DEFAULTLONGITUDE;
   distanceHome = 0.00;
@@ -184,7 +184,7 @@ void initGPS() {
   GPS.sendCommand(PMTK_SET_NMEA_OUTPUT_RMCONLY);
   /* 10 second update rate for updates and fix */
   GPS.sendCommand(PMTK_SET_NMEA_UPDATE_100_MILLIHERTZ);
-  GPS.sendCommand(PMTK_API_SET_FIX_CTL_200_MILLIHERTZ);
+  GPS.sendCommand(PMTK_API_SET_FIX_CTL_1HZ);
 }
 
 /*
