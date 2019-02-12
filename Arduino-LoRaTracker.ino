@@ -208,12 +208,13 @@ void initLoRa() {
   Serial.print(appEui);
   Serial.print(" AppKey:");
   Serial.println(appKey);
+  Serial.println("Connecting");
+  loraConnected = modem.joinOTAA(appEui, appKey);
   while (!loraConnected) {
-    Serial.println("Connecting");
-    loraConnected = modem.joinOTAA(appEui, appKey);
     Serial.println("Failed to connect. Retrying in 10 seconds.");
     delay(10000);
     Serial.println("Retrying...");
+    loraConnected = modem.joinOTAA(appEui, appKey);
   }
   Serial.print("Connected to network!");
 }
