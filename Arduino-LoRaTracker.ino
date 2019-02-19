@@ -1,5 +1,7 @@
 #include <Adafruit_GPS.h>
+#include <ArduinoLowPower.h>
 #include <MKRWAN.h>
+#include <RTCZero.h>
 #include <stdlib.h>
 
 /* WGS84 and GRS80 Ellipsoid reference */
@@ -62,6 +64,10 @@ float lastLatitude; // DD.ddddd
 float lastLongitude; // DD.ddddd
 byte status;
 
+/* RTC functionality */
+RTCZero rtc;
+int alarm;
+
 /* Timers for different parts */
 uint32_t systimer;
 uint32_t nettimer;
@@ -77,8 +83,7 @@ void(* resetFunction) (void) = 0;
 /*
     Setup everything on startup
 */
-void setup()
-{
+void setup() {
   Serial.begin(9600);
   pinMode(LED, OUTPUT);
   digitalWrite(LED, HIGH);
@@ -98,6 +103,8 @@ void setup()
 
   initLoRa();
   delay(1000);
+
+  initRTC();
   /* Millisecond timers */
   systimer = millis();
   nettimer = millis();
@@ -106,21 +113,41 @@ void setup()
   networkInterval = NETWORKINTERVAL;
   gpsInterval = GPSINTERVAL;
   /* Sends a first message on startup */
-  sendMessage(formatMessage(lastLatitude, lastLongitude));
+  //sendMessage(formatMessage(lastLatitude, lastLongitude));
+  alarm = 1;
   digitalWrite(LED, LOW);
 }
 
 /*
    Main functionality here.
 */
-void loop()
-{
+void loop() {
+  /* Go to sleep */
+  if (alarm == 0) {
+    modem.sleep(); // Retains network join => very necessary, otherwise send will always fail after sleep
+    GPS.standby();
+    GPSSerial.end();
+    digitalWrite(PINGPSENABLE, LOW);
+    rtcSetAlarmIn(0, 55, 0); // Own overlay method
+    /* While https://github.com/arduino-libraries/RTCZero/pull/42 is not yet accepted */
+    /* Use the LowPower libraries sleep due to its improved capabilities */
+    //rtc.standbyMode();
+    LowPower.sleep();
+    // Sleep until interrupt
+    digitalWrite(LED, HIGH);
+    Serial.println("Just woke up");
+    modem.sleep(false);
+    //initGPS();
+    digitalWrite(PINGPSENABLE, HIGH);
+    GPS.begin(9600);
+    GPS.wakeup();
+    systimer = millis();
+    digitalWrite(LED, LOW);
+  }
   /* Needs to "continuosly" read the GPS to receive sentence data */
   while (!GPS.newNMEAreceived()) {
     /* The GPS library handles the characters, no need to bring them through */
     GPS.read();
-    //char c = GPS.read();
-    //Serial.print(c);
   }
   /* Note that this clear the receivedflag */
   Serial.println(GPS.lastNMEA());
@@ -136,37 +163,47 @@ void loop()
   if (nettimer > millis()) nettimer = millis();
   if (gpstimer > millis()) gpstimer = millis();
 
-  /* This is not needed if GPS is set for 10 second update interval */
-  //if (millis() - gpstimer > gpsInterval) {
-  gpstimer = millis();
   printGPSDataTime();
   if (GPS.fix) {
+    // TODO Could probably set real RTC time here
     printGPSDataLocation();
     addState(GPS_FIX);
     lastLatitude = GPS.latitudeDegrees;
     lastLongitude = GPS.longitudeDegrees;
     distanceHome = distance(lastLatitude, lastLongitude, homeLatitude, homeLongitude);
+    Serial.print(distanceHome, 4); Serial.print(" meters home.");
     if (distanceHome > geofenceRadius && (lastLatitude != 0 || lastLongitude != 0)) {
       addState(GEOFENCE_ALARM);
     } else {
       removeState(GEOFENCE_ALARM);
     }
-    Serial.print(distanceHome, 4); Serial.print(" meters home.");
+    sendAndPrepareSleep();
+    /* Jump out and start loop from beginning */
+    return;
+
   } else {
     removeState(GPS_FIX);
   }
-
-  /* LoRa FW only allows to send every 2 minutes */
-  if (millis() - nettimer > networkInterval) {
-    nettimer = millis();
-    String messageToSend = formatMessage(lastLatitude, lastLongitude);
-    Serial.print("Sending message: "); Serial.println(messageToSend);
-    sendMessage(messageToSend);
+  /* Have been awake for 5 minutes */
+  if (millis() - systimer > 300000) {
+    Serial.println("No fix, timed out.");
+    sendAndPrepareSleep();
+    /* Jump out and start loop from beginning */
+    return;
   }
-  //}
+  
   digitalWrite(LED, LOW);
   /* Can be activated to avoid some while-looping above */
   delay(GPSINTERVAL);
+}
+
+void sendAndPrepareSleep() {
+  /* Send coordinates and then go to sleep */
+  String messageToSend = formatMessage(lastLatitude, lastLongitude);
+  Serial.print("Sending message: "); Serial.println(messageToSend);
+  sendMessage(messageToSend);
+  digitalWrite(LED, LOW);
+  alarm = 0;
 }
 
 /*
@@ -240,6 +277,101 @@ void sendMessage(String message) {
 }
 
 /*
+   Initializes the RTC for use with relative time
+*/
+void initRTC() {
+  alarm = 0;
+  rtc.begin();
+  rtc.setTime(0, 0, 0);
+  rtc.setDate(1, 1, 19);
+  /* Match on clock value regardless of date */
+  rtc.enableAlarm(rtc.MATCH_HHMMSS);
+  rtc.attachInterrupt(ISR_RTCAlarm);
+}
+
+/*
+   ISR called on RTC alarm
+*/
+void ISR_RTCAlarm() {
+  alarm++;
+}
+
+/*
+   Verify a date. Does not consider the actual number of valid days in a month.
+   Returns true for dates from 1.1.2000 to 31.12.2050
+   Year can be given with or without millenia prefix.
+*/
+bool validDate(int day, int month, int year) {
+  if (day < 1 || day > 31) {
+    return false;
+  }
+  if (month < 1 || month > 12) {
+    return false;
+  }
+  if ( year < 0 || year > 2050 || (year < 2000 && year > 50)) {
+    return false;
+  }
+}
+
+/*
+   Verify the hours, minutes and seconds are on the clock.
+   Returns true if time is between 00:00:00 and 23:59:59
+*/
+bool validTime(int hour, int minute, int second) {
+  if (hour < 0 || hour > 23 ) {
+    return false;
+  }
+  if (minute < 0 || minute > 59) {
+    return false;
+  }
+  if (second < 0 || second > 59) {
+    return false;
+  }
+  return true;
+}
+
+/*
+   Helper for the RTC alarm clock.
+   Checks the current time and adds the time with respect to valid clock times.
+   RTC needs to be configured for daily alarms since this only considers time and will spin around.
+   Will not add more than 23:59:59.
+   Returns true if succesful
+*/
+bool rtcSetAlarmIn(int hours, int minutes, int seconds) {
+  if (!validTime(hours, minutes, seconds)) {
+    return false;
+  }
+  int currentHours = rtc.getHours();
+  int currentMinutes = rtc.getMinutes();
+  int currentSeconds = rtc.getSeconds();
+  /* RTC in a bad state. Should consider reset? */
+  if (!validTime(currentHours, currentMinutes, currentSeconds)) {
+    return false;
+  }
+  /* Forward overflow addition */
+  seconds += currentSeconds;
+  if (seconds > 59) {
+    seconds -= 60;
+    minutes++;
+  }
+  minutes += currentMinutes;
+  if (minutes > 59) {
+    minutes -= 60;
+    hours++;
+  }
+  hours += currentHours;
+  if (hours > 23) {
+    hours -= 24;
+  }
+  /* This should not be necessary */
+  if (!validTime(hours, minutes, seconds)) {
+    return false;
+  }
+  rtc.setAlarmTime(hours, minutes, seconds);
+  return true;
+}
+
+/*
    Double to String from AVR library
    Width - minimun length of output string including negative sign and decimal dot. Pads with spaces.
    Precision is zero-padded after decimal dot
@@ -299,8 +431,7 @@ char statusToChar() {
    Great circle calculation for the distance between two points
    Converts to radians, calculates and outputs distance in meters
 */
-float distance(float lat1, float lon1, float lat2, float lon2)
-{
+float distance(float lat1, float lon1, float lat2, float lon2) {
   lat1 = radians(lat1);
   lon1 = radians(lon1);
   lat2 = radians(lat2);
