@@ -29,12 +29,13 @@ Connect the UFL antenna to the MKR WAN board.
 Install Arduino IDE and upload the code.  
 
 # Message protocol
-23 byte fixed length message. Should work nicely with all LoRa networks. Limit is sometimes 51 bytes while the LoRa specification maximum is 222 bytes.
+7 byte fixed length message. Should work nicely with all LoRa networks. Limit is sometimes 51 bytes while the LoRa specification maximum is 222 bytes.  
 Message format:  
-```<status>;<latitude>,<longitude>```  
-```A;  50.12345,-50.12345```
-"status" is a single ASCII charachter, value from 64 (@) to 127 (DEL).
-"latitude" and "longitude" both have the same form; optional negative sign, three places for degree, decimal point and five decimal degree digits (-DDD.ddddd). Beginning is padded with spaces and end is padded with zeroes. The latitude won't ever exceed two main degree digits but is still formatted the same way.
+```<status><latitude><longitude>```  
+"status" is a single ASCII charachter, value from 64 (@) to 127 (DEL).  
+"latitude" and "longitude" are the location coordinates originally as decimal degree values (-DDD.dddd) with 4 decimal digits (11m precision) but for transmission they are transformed as:  
+Float latitude/longitude (values + 180)*10000 cast to integers. The +180 addition eliminates the need for a negative sign. The integers are split into three 8-byte parts. The bytes are concatenated to a char[] (String).  Each of the coordinate parts is represented by 3 bytes while the status is a single byte, making the message a total of 7 bytes.  
+```[status_byte][latitude_byte1][latitude_byte2][latitude_byte3][longitude_byte1][longitude_byte2][longitude_byte3]```  
 
 ## Status codes
 One byte long, least significant 6 bits are used for statuses. Add an offset of 64 and interpret as a ASCII char.

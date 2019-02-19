@@ -84,6 +84,7 @@ void(* resetFunction) (void) = 0;
     Setup everything on startup
 */
 void setup() {
+  delay(5000);
   Serial.begin(9600);
   pinMode(LED, OUTPUT);
   digitalWrite(LED, HIGH);
@@ -131,14 +132,14 @@ void loop() {
     rtcSetAlarmIn(0, 55, 0); // Own overlay method
     /* While https://github.com/arduino-libraries/RTCZero/pull/42 is not yet accepted */
     /* Use the LowPower libraries sleep due to its improved capabilities */
-    //rtc.standbyMode();
-    LowPower.sleep();
+    rtc.standbyMode();
+    //LowPower.sleep();
     // Sleep until interrupt
     digitalWrite(LED, HIGH);
     Serial.println("Just woke up");
     modem.sleep(false);
-    //initGPS();
-    digitalWrite(PINGPSENABLE, HIGH);
+    initGPS();
+    //digitalWrite(PINGPSENABLE, HIGH);
     GPS.begin(9600);
     GPS.wakeup();
     systimer = millis();
@@ -331,8 +332,7 @@ bool validTime(int hour, int minute, int second) {
 }
 
 /*
-   Helper for the RTC alarm clock.
-   Checks the current time and adds the time with respect to valid clock times.
+   Helper for the RTC alarm clock. Checks the current time and adds the time with respect to valid clock times.
    RTC needs to be configured for daily alarms since this only considers time and will spin around.
    Will not add more than 23:59:59.
    Returns true if succesful
@@ -398,14 +398,41 @@ String floatToString(float value) {
    Returns string with coordinates
 */
 String formatMessageCoordinates(float latitude, float longitude) {
-  return floatToString(latitude) + "," + floatToString(longitude);
+  char msg[6];
+  int32_t lat = 0;
+  int32_t lon = 0;
+  
+  latitude += 180;
+  longitude += 180;
+  latitude = latitude * 10000.0;
+  longitude = longitude * 10000.0;
+  lat = (int) round(latitude);
+  lon = (int) round(longitude);
+
+  /* (Extra) shifts to clear any unwanted values. */
+  byte lat1 = (lat << 8) >> 24;
+  byte lat2 = (lat << 16) >> 24;
+  byte lat3 = (lat << 24) >> 24;
+
+  byte lon1 = (lon << 8) >> 24;
+  byte lon2 = (lon << 16) >> 24;
+  byte lon3 = (lon << 24) >> 24;
+ 
+  msg[0] = lat1;
+  msg[1] = lat2;
+  msg[2] = lat3;
+  msg[3] = lon1;
+  msg[4] = lon2;
+  msg[5] = lon3;
+
+  return (String) msg;
 }
 
 /*
    Returns string with message containing status and coordinates in suitable format.
 */
 String formatMessage(float latitude, float longitude) {
-  return (String)statusToChar() + ";" + formatMessageCoordinates(latitude, longitude);
+  return (String)statusToChar() + "" + formatMessageCoordinates(latitude, longitude);
 }
 
 void addState(byte state) {
