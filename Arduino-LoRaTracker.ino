@@ -25,6 +25,16 @@
 #define NETWORKINTERVAL 600000
 #define GPSINTERVAL 10000
 
+/* Wait a while to attempt to comply with duty cycle regulations */
+#define LORA_JOIN_FAILED_RETRY_INTERVAL 60000
+/* Modem firmware allows sending every 2 minutes. For duty cycle regulations: 4 minutes */
+/* Depends on SF and payload size. 20 bytes SF12 => 1.8s, 20 bytes SF7 => 0.2s */
+/* Max 2 seconds air time / 240 seconds => 0.83% */
+#define LORA_JOIN_RETRIES_BEFORE_RESET 5
+#define LORA_SEND_INTERVAL 240000
+/* Between 1 and 255, 0 reserved for system/mac messages */
+#define LORA_SEND_PORT 1
+
 /* Status code bits */
 #define BATTERY_LOW B00000001
 #define TAMPERED B00000010
@@ -50,8 +60,10 @@ LoRaModem modem;
 String appEui;
 String appKey;
 String devAddr;
-int messageSuccess;
-int loraConnected;
+int messageSendStatus;
+bool loraJoined;
+int loraJoinRetries;
+String messageToSend;
 
 /* Geofence variables for radial region */
 uint16_t geofenceRadius; // Meters
@@ -140,8 +152,9 @@ void loop() {
     modem.sleep(false);
     initGPS();
     //digitalWrite(PINGPSENABLE, HIGH);
-    GPS.begin(9600);
-    GPS.wakeup();
+    //delay(600);
+    //GPS.begin(9600);
+    //GPS.wakeup();
     systimer = millis();
     digitalWrite(LED, LOW);
   }
@@ -181,7 +194,6 @@ void loop() {
     sendAndPrepareSleep();
     /* Jump out and start loop from beginning */
     return;
-
   } else {
     removeState(GPS_FIX);
   }
@@ -192,15 +204,12 @@ void loop() {
     /* Jump out and start loop from beginning */
     return;
   }
-  
   digitalWrite(LED, LOW);
-  /* Can be activated to avoid some while-looping above */
-  delay(GPSINTERVAL);
 }
 
 void sendAndPrepareSleep() {
   /* Send coordinates and then go to sleep */
-  String messageToSend = formatMessage(lastLatitude, lastLongitude);
+  messageToSend = formatMessage(lastLatitude, lastLongitude);
   Serial.print("Sending message: "); Serial.println(messageToSend);
   sendMessage(messageToSend);
   digitalWrite(LED, LOW);
@@ -220,54 +229,58 @@ void initGPS() {
   GPS.begin(9600);
   /* Minimum GPS data */
   GPS.sendCommand(PMTK_SET_NMEA_OUTPUT_RMCONLY);
-  /* 10 second update rate for updates and fix */
-  GPS.sendCommand(PMTK_SET_NMEA_UPDATE_100_MILLIHERTZ);
+  /* SET_FIX command must be sent before NMEA_UPDATE or else NMEA_UPDATE won't have any effect  */
+  /* Fix MUST update more often than 100 mHz for the GPS to work properly */
   GPS.sendCommand(PMTK_API_SET_FIX_CTL_1HZ);
+  /* 10 second update rate for output */
+  GPS.sendCommand(PMTK_SET_NMEA_UPDATE_100_MILLIHERTZ);
 }
 
 /*
    Initializes the LoRa modem and connects to the network
 */
-void initLoRa() {
+bool initLoRa() {
   appKey.trim();
   appEui.trim();
-  loraConnected = 0;
-  messageSuccess = 0;
+  loraJoined = false;
+  loraJoinRetries = 0;
+  messageSendStatus = 0;
   Serial.println("Starting LoRa modem");
   if (!modem.begin(EU868)) {
-    Serial.println("Failed to start module. Resetting board...");
+    Serial.println("Failed to start LoRa modem. Resetting board...");
     resetFunction();
   }
-  Serial.print("LoRa version: ");
-  Serial.println(modem.version());
-  Serial.print("DevEUI: ");
-  Serial.println(modem.deviceEUI());
-  Serial.print("OTAA Connect AppEUI:");
-  Serial.print(appEui);
-  Serial.print(" AppKey:");
-  Serial.println(appKey);
+  Serial.print("LoRa modem version: "); Serial.println(modem.version());
+  Serial.print("DevEUI: "); Serial.println(modem.deviceEUI());
+  Serial.print("OTAA Connect AppEUI:"); Serial.print(appEui);
+  Serial.print(" AppKey:"); Serial.println(appKey);
   Serial.println("Connecting");
-  loraConnected = modem.joinOTAA(appEui, appKey);
-  while (!loraConnected) {
-    Serial.println("Failed to connect. Retrying in 10 seconds.");
-    delay(10000);
+  loraJoined = modem.joinOTAA(appEui, appKey);
+  loraJoinRetries++;
+  while (!loraJoined && (loraJoinRetries++ <= LORA_JOIN_RETRIES_BEFORE_RESET) ) {
+    Serial.println("Failed to connect. Retrying in a moment.");
+    delay(LORA_JOIN_FAILED_RETRY_INTERVAL);
     Serial.println("Retrying...");
-    loraConnected = modem.joinOTAA(appEui, appKey);
+    loraJoined = modem.joinOTAA(appEui, appKey);
   }
+  if (loraJoinRetries > LORA_JOIN_RETRIES_BEFORE_RESET ) {
+    resetFunction();
+  }
+  modem.setPort(LORA_SEND_PORT);
   Serial.print("Connected to network!");
+  return true;
 }
 
 /*
    Send message over LoRa
 */
 void sendMessage(String message) {
-  if (loraConnected) {
-    messageSuccess = 0;
-    modem.setPort(3);
+  if (loraJoined) {
+    messageSendStatus = 0;
     modem.beginPacket();
     modem.print(message);
-    messageSuccess = modem.endPacket(true);
-    if (messageSuccess > 0) {
+    messageSendStatus = modem.endPacket(true);
+    if (messageSendStatus > 0) {
       Serial.println("Message \"" + message + "\" sent successfully!");
     } else {
       Serial.println("Error sending message \"" + message);
@@ -395,13 +408,13 @@ String floatToString(float value) {
 }
 
 /*
-   Returns string with coordinates
+   Returns string with coordinates as defined in the message protocol.
 */
 String formatMessageCoordinates(float latitude, float longitude) {
-  char msg[6];
+  char coord[6];
   int32_t lat = 0;
   int32_t lon = 0;
-  
+
   latitude += 180;
   longitude += 180;
   latitude = latitude * 10000.0;
@@ -410,29 +423,30 @@ String formatMessageCoordinates(float latitude, float longitude) {
   lon = (int) round(longitude);
 
   /* (Extra) shifts to clear any unwanted values. */
-  byte lat1 = (lat << 8) >> 24;
-  byte lat2 = (lat << 16) >> 24;
-  byte lat3 = (lat << 24) >> 24;
+  coord[0] = (lat << 8) >> 24;
+  coord[1] = (lat << 16) >> 24;
+  coord[2] = (lat << 24) >> 24;
 
-  byte lon1 = (lon << 8) >> 24;
-  byte lon2 = (lon << 16) >> 24;
-  byte lon3 = (lon << 24) >> 24;
- 
-  msg[0] = lat1;
-  msg[1] = lat2;
-  msg[2] = lat3;
-  msg[3] = lon1;
-  msg[4] = lon2;
-  msg[5] = lon3;
+  coord[3] = (lon << 8) >> 24;
+  coord[4] = (lon << 16) >> 24;
+  coord[5] = (lon << 24) >> 24;
 
-  return (String) msg;
+  String coordinates = "";
+
+  for(int i=0;i<6;i++) {
+    coordinates += coord[i];
+  }
+  return coordinates;
 }
 
 /*
-   Returns string with message containing status and coordinates in suitable format.
+   Returns string with message containing status and coordinates as defined in the message protocol.
 */
 String formatMessage(float latitude, float longitude) {
-  return (String)statusToChar() + "" + formatMessageCoordinates(latitude, longitude);
+  String message = "";
+  message += statusToChar();
+  message += formatMessageCoordinates(latitude, longitude);
+  return message;
 }
 
 void addState(byte state) {
